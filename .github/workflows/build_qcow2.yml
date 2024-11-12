@@ -1,0 +1,132 @@
+---
+  name: build_qcow2
+  
+  on:
+    workflow_dispatch:
+      inputs:
+        xnvme_repos_ref:
+          description: 'Branch, tag, or ref of xNVMe repository'
+          required: true
+          default: 'master'
+  
+  jobs:
+    source-archive-with-subprojects:
+      runs-on: ubuntu-20.04
+      container: ghcr.io/xnvme/xnvme-deps-alpine-latest:next
+
+      steps:
+      - name: Checkout xNVMe repository
+        uses: actions/checkout@v4.1.7
+        with:
+          repository: ${{ github.repository_owner }}/${{ vars.XNVME_REPOS_NAME }}
+          submodules: 'recursive'
+          fetch-depth: 0
+          path: xnvme
+
+      - name: Add repos to git-config safe.directory
+        run: |
+          git config --global --add safe.directory $(pwd)
+
+      - name: Check repository...
+        run: |
+          ls -lha
+          git status
+
+      - name: Generate Source Archive with subprojects
+        run: |
+          make clean gen-src-archive-with-subprojects
+
+      - name: Rename to un-versioned xnvme-src.tar.gz
+        run: |
+          mv builddir/meson-dist/xnvme-0.7.5.tar.gz builddir/meson-dist/xnvme-src.tar.gz
+          mv builddir/meson-dist/xnvme-0.7.5.tar.gz.sha256sum builddir/meson-dist/xnvme-src.tar.gz.sha256sum
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4.3.0
+        with:
+          name: xnvme-src-archive-with-subprojects
+          path: |
+            builddir/meson-dist/xnvme-src.tar.gz.sha256sum
+            builddir/meson-dist/xnvme-src.tar.gz
+          if-no-files-found: error
+
+
+    build-qcow:
+      needs: source-archive-with-subprojects
+      runs-on: ubuntu-latest
+      container:
+        image: ghcr.io/xnvme/xnvme-deps-alpine-latest:next
+        options: --privileged
+      strategy:
+        matrix:
+          image:
+          - { os: "debian", ver: "bullseye" }
+          - { os: "freebsd", ver: "13" }
+
+      env:
+        REPOSITORY_TARBALL_PATH: ${{ github.workspace }}/xnvme-src-archive-with-subprojects.tar.gz
+
+      concurrency:
+        group: build_qcow2
+        cancel-in-progress: false
+
+      steps:
+      - name: Download the repository
+        uses: actions/download-artifact@v4.1.8
+        with:
+          name: xnvme-src-archive-with-subprojects
+
+      - name: Checkout xNVMe repository
+        uses: actions/checkout@v4.1.7
+        with:
+          repository: ${{ github.repository_owner }}/${{ vars.XNVME_REPOS_NAME }}
+          submodules: 'recursive'
+          fetch-depth: 0
+          path: xnvme
+
+      - name: Checkout CI repository
+        uses: actions/checkout@v4.1.7
+        with:
+          path: ci
+
+      - name: Setup CIJOE and pipx
+        run: |
+          pipx install cijoe -f
+          pipx ensurepath
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Build
+        run: |
+          cd xnvme/cijoe
+          cijoe \
+          --monitor \
+          --config configs/${{ matrix.image.os }}-${{ matrix.image.ver }}.toml \
+          --workflow workflows/bootimg-${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.yaml
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4.4.0
+        if: always()
+        with:
+          path: xnvme/cijoe/cijoe-output
+          name: cloudinit-report-${{ matrix.image.os }}-${{ matrix.image.ver }}
+
+      - name: Change image format and compress
+        run: |
+          ls -lha $HOME/guests/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64/
+          for i in $(seq 1 60); do test -f "$HOME/guests/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64/guest.pid" || break; sleep 1; done
+          ls -lha $HOME/guests/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64/
+          qemu-img convert $HOME/guests/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64/boot.img ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2 -O qcow2 -c
+          ls -lha ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2
+
+      # This relies on the following secrets: S3_KEY, S3_SECRET, S3_ENDPOINT_URL
+      - name: Transfer to S3 Compatible Storage
+        env:
+          S3_KEY: ${{ secrets.S3_KEY }}
+          S3_SECRET: ${{ secrets.S3_SECRET }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_BUCKET: xnvme
+        run : |
+          ./ci/s3_file_upload.py ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2 \
+          --bucket "$S3_BUCKET" \
+          --endpoint-url "$S3_ENDPOINT_URL" \
+          --object-key "system/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2"
