@@ -138,17 +138,11 @@
           qemu-img convert $HOME/guests/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64/boot.img ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2 -O qcow2 -c
           ls -lha ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2
 
-      # This relies on the following secrets: S3_KEY, S3_SECRET, S3_ENDPOINT_URL
-      - name: Transfer to S3 Compatible Storage
+      - name: Transfer to  storage box
         env:
-          S3_KEY: ${{ secrets.S3_KEY }}
-          S3_SECRET: ${{ secrets.S3_SECRET }}
-          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
-          S3_REGION: ${{ secrets.S3_REGION }}
-          S3_BUCKET: xnvme
+          USERNAME: ${{ secrets.STORAGEBOX_QCOW_IMAGES_USERNAME }}
+          PASSWORD: ${{ secrets.STORAGEBOX_QCOW_IMAGES_PASSWORD }}
+          FILE: ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2
         run : |
-          ./ci/s3_file_upload.py ${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2 \
-          --bucket "$S3_BUCKET" \
-          --endpoint-url "$S3_ENDPOINT_URL" \
-          --region "$S3_REGION" \
-          --object-key "system/${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.qcow2"
+          sshpass -p ${PASSWORD} \
+            scp ${FILE} ${USERNAME}@${USERNAME}.your-storagebox.de:/public/${FILE}
