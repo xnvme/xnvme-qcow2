@@ -7,46 +7,47 @@
         xnvme_repos_ref:
           description: 'Branch, tag, or ref of xNVMe repository'
           required: true
-          default: 'master'
+          default: 'main'
   
   jobs:
     source-archive-with-subprojects:
-      runs-on: ubuntu-20.04
+      runs-on: ubuntu-latest
       container: ghcr.io/xnvme/xnvme-deps-alpine-latest:next
 
       steps:
-      - name: Checkout xNVMe repository
-        uses: actions/checkout@v4.1.7
+      - name: Grab source
+        uses: actions/checkout@v4
         with:
           repository: ${{ github.repository_owner }}/${{ vars.XNVME_REPOS_NAME }}
           submodules: 'recursive'
           fetch-depth: 0
-          path: xnvme
           ref: ${{ inputs.xnvme_repos_ref }}
 
       - name: Add repos to git-config safe.directory
         run: |
-          cd xnvme
           git config --global --add safe.directory $(pwd)
 
-      - name: Generate Source Archive with subprojects
+      - name: Check repository...
         run: |
-          cd xnvme
+          ls -lha
+          git status
+
+      - name: Generate Source Archive
+        run: |
           make clean gen-src-archive-with-subprojects
 
       - name: Rename to un-versioned xnvme-src.tar.gz
         run: |
-          cd xnvme
           mv builddir/meson-dist/xnvme-0.7.5.tar.gz builddir/meson-dist/xnvme-src.tar.gz
           mv builddir/meson-dist/xnvme-0.7.5.tar.gz.sha256sum builddir/meson-dist/xnvme-src.tar.gz.sha256sum
 
       - name: Upload source archive
         uses: actions/upload-artifact@v4.3.0
         with:
-          name: xnvme-src-archive
+          name: xnvme-src-archive-with-subprojects
           path: |
-            xnvme/builddir/meson-dist/xnvme-src.tar.gz.sha256sum
-            xnvme/builddir/meson-dist/xnvme-src.tar.gz
+            builddir/meson-dist/xnvme-src.tar.gz.sha256sum
+            builddir/meson-dist/xnvme-src.tar.gz
           if-no-files-found: error
 
 
@@ -68,25 +69,13 @@
         cancel-in-progress: false
 
       steps:
-      - name: Runner-prep, clean up self-hosted left-overs
-        run: |
-          pkill -f qemu || true
-          rm -rf $HOME/guests 
-          rm -rf $HOME/images 
-          rm -r /tmp/artifacts || true
-          mkdir -p /tmp/artifacts || true
-          rm -rf *
-          ls -lh
+      - uses: xnvme/actions/.github/actions/cleanup@main
 
-      - name: Download the repository
-        uses: actions/download-artifact@v4.1.8
+      - name: Retrieve and unpack the xNVMe source archive
+        uses: xnvme/actions/.github/actions/setup-source@main
+        id: source
         with:
-          name: xnvme-src-archive
-
-      - name: Extract, and then move, the xNVMe source archive
-        run: |
-          tar xzf xnvme-src.tar.gz --strip 1
-          mv xnvme-src.tar.gz /tmp/artifacts/.
+          name: xnvme-src-archive-with-subprojects
 
       - name: Install python-venv
         run: |
@@ -111,6 +100,7 @@
       - name: Get FreeBSD image
         if: matrix.image.os == 'freebsd'
         run: |
+          rm -rf $HOME/images
           mkdir -p "$HOME/images/boot_images/"
           cd "$HOME/images/boot_images/"
           wget https://download.freebsd.org/releases/CI-IMAGES/14.1-RELEASE/amd64/Latest/FreeBSD-14.1-RELEASE-amd64-BASIC-CI.raw.xz
@@ -120,8 +110,9 @@
       - name: Build
         run: |
           cd cijoe && cijoe \
-          --config configs/${{ matrix.image.os }}-${{ matrix.image.ver }}.toml \
-          --workflow workflows/bootimg-${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.yaml
+          workflows/bootimg-${{ matrix.image.os }}-${{ matrix.image.ver }}-amd64.yaml \
+          -m -l \
+          --config configs/${{ matrix.image.os }}-${{ matrix.image.ver }}.toml
 
       - name: Upload CIJOE report
         uses: actions/upload-artifact@v4.4.0
